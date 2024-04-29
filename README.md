@@ -33,32 +33,12 @@ You must have:
 
 ## Setup and installation instructions :
 
-1. Clone this repository and cd into it
-    ```bash
-    git clone https://github.com/users/geeknavi-lecture-summarizer.git
-    cd geeknavi-lecture-summarizer
-    ```
-
-2. Create and activate a virtual environment (optional)
-
-    MacOS/Linux:
-    ```bash
-    python -m venv venv  # you may need to use `python3` instead
-    source ./venv/bin/activate
-    ```
-
-    Windows:
-    ```bash
-    python -m venv venv  # you may need to use `python3` instead
-    .\venv\Scripts\activate.bat
-    ```
-
-3. Install dependencies
+1. Install dependencies
     ```bash
     pip install -r requirements.txt
     ```
     
-4. Set your All your API Key (optional)
+2. Set your All your API Key (optional)
 
     In the ".env" file, add all your API's key, which you can copy by visiting the official pages. Here is a Format :
     ```bash
