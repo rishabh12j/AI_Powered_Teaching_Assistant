@@ -1,137 +1,153 @@
-from crewai import Agent, Task, Crew, Process 
+"""AI teaching assistant: turns a lecture (audio file or YouTube link) into study notes and a quiz.
+
+Speech-to-text runs on Groq Whisper; two CrewAI agents (a note-taker and a quiz-maker) write the
+notes and the multiple-choice quiz on a Groq-hosted LLM.
+
+Secrets (Space settings): GROQ_API_KEY (the older name Token also works).
+Optional variable GROQ_MODEL overrides the default text model.
+"""
+
 import os
+import re
+from pathlib import Path
+
 import gradio as gr
-from b2sdk.v1 import InMemoryAccountInfo, B2Api
-import requests
-import google.generativeai as genai
-from pytube import YouTube
-import tempfile
+from crewai import LLM, Agent, Crew, Process, Task
+from groq import Groq
 
-GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
-genai.configure(api_key=GOOGLE_API_KEY)
-
-os.environ["OPENAI_API_BASE"] = 'https://api.groq.com/openai/v1'
-os.environ["OPENAI_MODEL_NAME"] = 'llama3-70b-8192'
-os.environ["OPENAI_API_KEY"] = os.getenv('Token')
-
-API_key_baseten = os.getenv('Baseten')
-model_id_whisper = os.getenv('Baseten_Model')
-application_key_id_blackblaze = os.getenv('application_key_id_blackblaze')
-application_key_blackblaze = os.getenv('application_key_blackblaze')
-bucket_name = os.getenv('bucket_name')
-
-def main():
-    with gr.Blocks() as demo:
-        with gr.Row():
-            with gr.Column(scale=3):
-                audio_input = gr.Audio(sources=["upload"], type="filepath", interactive=True, label="Please upload your audio lesson",format="mp3")
-                print(audio_input)
-                youtube_input = gr.Textbox(placeholder="Enter YouTube URL here...", lines=1, label="Enter YouTube link")
-        
-        with gr.Row():
-            with gr.Column(scale=1):
-                notes_output = gr.Textbox(lines=4, placeholder="Notes Output")
-                quiz_output = gr.Textbox(lines=4, placeholder="Quiz Output")
-        
-        with gr.Row():
-            with gr.Column(scale=1):
-                #audio_player = gr.Audio(interactive=False)
-                video_output = gr.HTML()
-        
-        with gr.Row():
-            text_button = gr.Button("Send")
-        
-        text_button.click(process_input, [audio_input, youtube_input], [notes_output, quiz_output, audio_input, video_output])
-        youtube_input.change(embed_youtube_video, [youtube_input], video_output)
-    
-    demo.launch()
-
-def process_input(audio_file, youtube_link):
-    if audio_file is not None:
-        with open(audio_file, 'rb') as file_data:
-            notes, quiz = upload_to_b2(file_data)
-        return notes, quiz, audio_file, None
-    elif youtube_link:
-        notes, quiz = process_youtube_link(youtube_link)
-        return notes, quiz, None, youtube_link
-    else:
-        return "Please provide either an audio file or a YouTube link.", "", None, None
+GROQ_KEY = os.getenv("GROQ_API_KEY") or os.getenv("Token")
+TEXT_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+STT_MODEL = os.getenv("GROQ_STT_MODEL", "whisper-large-v3-turbo")
+MAX_AUDIO_MB = 25
+MAX_TRANSCRIPT_CHARS = 24_000  # keeps requests inside free-tier token limits
 
 
-def process_youtube_link(youtube_link):
-    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as temp_file:
-        try:
-            video = YouTube(youtube_link)
-            audio_stream = video.streams.filter(only_audio=True).first()
-            audio_stream.download(filename=temp_file.name)
-            
-            with open(temp_file.name, 'rb') as file_data:
-                notes, quiz = upload_to_b2(file_data)
-            
-            return notes, quiz
-        finally:
-            os.unlink(temp_file.name)
+def youtube_id(url: str) -> str | None:
+    match = re.search(r"(?:v=|youtu\.be/|shorts/|embed/)([A-Za-z0-9_-]{11})", url or "")
+    return match.group(1) if match else None
 
-info = InMemoryAccountInfo()
-b2_api = B2Api(info)
-b2_api.authorize_account("production", application_key_id_blackblaze, application_key_blackblaze)
-bucket = b2_api.get_bucket_by_name(bucket_name)
 
-def upload_to_b2(file):
-    
-    file_name = os.path.basename(file.name)
-    file_info = {'description': 'Uploaded audio file'}
-    
-    with open(file.name, 'rb') as file_data:
-        file_id = bucket.upload_bytes(file_data.read(), file_name, file_infos=file_info)
+def embed_video(url: str) -> str:
+    vid = youtube_id(url)
+    if not vid:
+        return ""
+    return (
+        f'<iframe width="560" height="315" src="https://www.youtube.com/embed/{vid}" '
+        'frameborder="0" allow="accelerometer; clipboard-write; encrypted-media; gyroscope; '
+        'picture-in-picture" allowfullscreen></iframe>'
+    )
 
-    audio_file_url = f'https://f005.backblazeb2.com/file/{bucket_name}/{file_name}'
-    data = {"url": audio_file_url}
-    res = requests.post(f"https://model-{model_id_whisper}.api.baseten.co/production/predict", headers={"Authorization": f"Api-Key {API_key_baseten}"}, json=data)    
-    
-    full_transcription = ""
-    response = res.json()
-    for segment in response['segments']:
-        full_transcription += segment['text'] + " "
-    
-    model = genai.GenerativeModel("models/gemini-1.5-pro-latest")
-    notes = model.generate_content([
-        "from the transcript extracted from audio files generate notes. The generated notes should cover all the timestamps so that any student/person reading the notes should clearly understand the lecture/podcast. Cover all the points not just the main points. Don't be concise. Be very detailed with your response. Also, don't include timestamps in your response. The generated length of the notes should be as long as the transcripts length. Make sure to include headings and titles.",
-        full_transcription
-    ])
-    
-    quiz = agent(full_transcription)
 
-    return notes.text, quiz
+def transcribe_audio(path: str) -> str:
+    size_mb = Path(path).stat().st_size / 1_000_000
+    if size_mb > MAX_AUDIO_MB:
+        raise ValueError(f"The audio file is {size_mb:.0f} MB; the limit here is {MAX_AUDIO_MB} MB.")
+    client = Groq(api_key=GROQ_KEY)
+    with open(path, "rb") as fh:
+        result = client.audio.transcriptions.create(file=(Path(path).name, fh.read()), model=STT_MODEL)
+    return result.text
 
-def agent(transcript):
-    classifier = Agent(role="quiz generator",
-                       goal="from the transcript extracted from audio files generate quiz questions with answers. The generated quiz questions should be in multiple choice format so that any student/person taking the quiz should clearly understand the lecture/podcast. Cover all the points not just the main points. Don't be concise. Be very detailed with your response.",
-                       backstory="You are an AI assistant build to generate quiz questions from the transcript.",
-                       verbose=True, allow_delegation=False)
-    
-    classify_email = Task(
-        description=f"generate quiz from the '{transcript}'",
-        agent=classifier,
-        expected_output="detailed quiz questions based on the transcript",)
-    
-    crew = Crew(agents=[classifier], tasks=[classify_email], verbose=2, process=Process.sequential)
-    output = crew.kickoff()
-    
-    return output
 
-def embed_youtube_video(url):
-    if url:
-        # Extract the video ID from the URL
-        video_id = url.split("v=")[1].split("&")[0] if "v=" in url else url.split("/")[-1]
-        video_html = f'''
-        <iframe width="560" height="315" src="https://www.youtube.com/embed/{video_id}" 
-        frameborder="0" allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
-        allowfullscreen></iframe>
-        '''
-        return video_html
-    return "Please enter a YouTube URL."
+def youtube_transcript(url: str) -> str:
+    from youtube_transcript_api import YouTubeTranscriptApi
 
+    vid = youtube_id(url)
+    if not vid:
+        raise ValueError("That does not look like a YouTube link.")
+    try:
+        fetched = YouTubeTranscriptApi().fetch(vid, languages=["en", "en-GB", "en-US", "hi"])
+    except Exception as exc:
+        raise ValueError(
+            "YouTube would not share captions for this video with a cloud server "
+            f"({type(exc).__name__}). Download the audio and upload it instead."
+        ) from exc
+    return " ".join(snippet.text for snippet in fetched)
+
+
+def teaching_crew(transcript: str) -> Crew:
+    llm = LLM(model=f"groq/{TEXT_MODEL}", api_key=GROQ_KEY, temperature=0.3)
+    note_taker = Agent(
+        role="Lecture note-taker",
+        goal="Write complete, well-organised study notes that let a student learn the lecture without listening to it",
+        backstory="An experienced teaching assistant who turns spoken lectures into clear notes with headings.",
+        llm=llm, allow_delegation=False, verbose=False,
+    )
+    quiz_maker = Agent(
+        role="Quiz writer",
+        goal="Write multiple-choice questions that check understanding of every key point in the lecture",
+        backstory="A teacher who writes fair, unambiguous multiple-choice questions with one correct answer.",
+        llm=llm, allow_delegation=False, verbose=False,
+    )
+    notes = Task(
+        description=(
+            "Write detailed study notes from this lecture transcript. Use Markdown headings and bullet points, "
+            "cover every topic in order, and do not include timestamps.\n\nTRANSCRIPT:\n" + transcript
+        ),
+        expected_output="Markdown study notes with headings that cover the whole lecture.",
+        agent=note_taker,
+    )
+    quiz = Task(
+        description=(
+            "Using the lecture transcript and the notes, write 8 to 10 multiple-choice questions. Each question "
+            "has options A to D, exactly one correct answer, and a one-line explanation. Put the answers after "
+            "the questions under a heading 'Answers'.\n\nTRANSCRIPT:\n" + transcript
+        ),
+        expected_output="A Markdown multiple-choice quiz followed by an answer key with explanations.",
+        agent=quiz_maker,
+        context=[notes],
+    )
+    return Crew(agents=[note_taker, quiz_maker], tasks=[notes, quiz], process=Process.sequential, verbose=False)
+
+
+def run(audio_path, youtube_url):
+    if not GROQ_KEY:
+        msg = "This Space is missing its Groq key. The owner needs to add it as a secret named `GROQ_API_KEY`."
+        return msg, "", ""
+    try:
+        if audio_path:
+            transcript = transcribe_audio(audio_path)
+        elif (youtube_url or "").strip():
+            transcript = youtube_transcript(youtube_url)
+        else:
+            return "Upload an audio lesson or paste a YouTube link first.", "", ""
+    except Exception as exc:
+        return f"Could not get a transcript: {exc}", "", ""
+
+    note = ""
+    if len(transcript) > MAX_TRANSCRIPT_CHARS:
+        transcript = transcript[:MAX_TRANSCRIPT_CHARS]
+        note = f"\n\n_Only the first {MAX_TRANSCRIPT_CHARS:,} characters of the transcript were used._"
+    try:
+        crew = teaching_crew(transcript)
+        crew.kickoff()
+        notes_md = crew.tasks[0].output.raw + note
+        quiz_md = crew.tasks[1].output.raw
+    except Exception as exc:
+        return f"The notes could not be generated right now ({type(exc).__name__}: {exc}).", "", transcript
+    return notes_md, quiz_md, transcript
+
+
+with gr.Blocks(title="AI-Powered Teaching Assistant") as demo:
+    gr.Markdown(
+        "# 🎓 AI-Powered Teaching Assistant\n"
+        "Upload a recorded lesson or paste a YouTube link. Whisper transcribes it, then two CrewAI agents "
+        "write study notes and a multiple-choice quiz."
+    )
+    with gr.Row():
+        with gr.Column():
+            audio_in = gr.Audio(label="Audio lesson (up to 25 MB)", type="filepath", sources=["upload"])
+            url_in = gr.Textbox(label="…or a YouTube link", placeholder="https://www.youtube.com/watch?v=…")
+            go = gr.Button("Make notes and quiz", variant="primary")
+        video = gr.HTML()
+    with gr.Tab("Notes"):
+        notes_out = gr.Markdown()
+    with gr.Tab("Quiz"):
+        quiz_out = gr.Markdown()
+    with gr.Tab("Transcript"):
+        transcript_out = gr.Textbox(lines=12, show_label=False)
+
+    url_in.change(embed_video, url_in, video)
+    go.click(run, [audio_in, url_in], [notes_out, quiz_out, transcript_out], api_name="run")
 
 if __name__ == "__main__":
-    main()
+    demo.launch()

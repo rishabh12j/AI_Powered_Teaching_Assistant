@@ -1,100 +1,78 @@
-# Geeknavi : AI_Powered_Teaching_Assistant automatically summarize lectures and quiz to test your learning.
+# GeekNavi: AI-Powered Teaching Assistant
 
-Geeknavi app that automatically summarizes lecture recordings and create a quiz to test your learning from the lecture. 
-AI-Powered Teaching Assistant - This tool can take audio lectures as input and generate comprehensive notes using OpenAI Whisper model running on Baseten for transcription and the powerful Gemini AI 1.5 for note generation, with an AI agent powered by Meta LLaMA3 model accessed through Groq, enabling assistant to create quizzes and assessments.
+Upload a recorded lecture (or paste a YouTube link) and GeekNavi writes detailed study notes plus a multiple-choice quiz with an answer key, so you can test what you learnt.
 
-> The architecture involves interacting with various services such as Google  Gemini API, OpenAI/Groq API, Baseten, and Backblaze B2 to transcribe audio, generate notes, and create quiz questions.
+**Live demo:** https://huggingface.co/spaces/Rishabh12j/AI_Powered_Teaching_Assistant
 
-![Geeknavi-architecture](https://github.com/attrib07/Geeknavi-/assets/44226488/23d1f2e2-96a8-45c1-8f84-18be9c0ee4e1)
+## Versions
+- **v0.1 (2024), Team Gen4:** Whisper on Baseten for transcription, Gemini 1.5 for notes, a LLaMA 3 agent on Groq for quizzes, Backblaze B2 for file storage. See [v0.1 architecture](#v01-architecture-2024) below.
+- **v0.2 (2026), rebuilt on Groq by Rishabh Jain:** one provider for everything, a two-agent CrewAI pipeline, YouTube captions instead of audio downloads, and Gradio 6. This is the code in this repo and on the live demo.
 
-You can check out a demo of the app [here- updating soon]) or Test out with public Link and code : [here](https://huggingface.co/spaces/Rishabh12j/AI_Powered_Teaching_Assistant).
-
-The application was tested with **Python 3.10.11**
-
-## GeekNavi v0.1 by Gen4
-
-Index | *geeknavi by Gen4*
---- | ---
--📢 | Project overview and architecture
--👁️‍🗨️ | Prerequisites
--👩‍💻 | Setup and installation instructions
--🌐 | Run and use the Application
--📺 | Future Plans : Comming Soon
--💬 | Team - Gen4 Contributors of GeekNavi
-
-## Prerequisites
-You must have:
-1. [Python](https://www.python.org/) installed
-2. [pip](https://pip.pypa.io/en/stable/installation/) installed
-3. An [Google_API_Key](https://ai.google.dev/)
-4. An [OPEN_API_KEY](https://console.groq.com/)
-5. An [baseten_API-Optional](https://www.baseten.co/)
-6. An [Backblaze_B2_API_KEY-Optional](https://www.backblaze.com/)
-
-## Setup and installation instructions :
-
-1. Install dependencies
-    ```bash
-    pip install -r requirements.txt
-    ```
-    
-2. Set your All your API Key (optional)
-
-    In the ".env" file, add all your API's key, which you can copy by visiting the official pages. Here is a Format :
-    ```bash
-    GOOGLE_API_KEY = ''
-    OPENAI_API_KEY = ''
-    bucket_name = ''
-    API_key_baseten = ''
-    model_id_whisper = ""
-    application_key_id_blackblaze = ''
-    application_key_blackblaze = ''
-    ```
-
-## Run the application
-
-1. Start the app
-```bash
-gradio run app.py
+## How it works (v0.2)
 ```
+audio / YouTube captions ──► Whisper (Groq) ──► transcript
+                                                 │
+                        ┌────────────────────────┴───────────────────────┐
+                        ▼                                                ▼
+          Agent 1: note-taker (CrewAI)  ──notes as context──►  Agent 2: quiz writer (CrewAI)
+                        │                                                │
+                   study notes                             8–10 MCQs + answer key
+```
+- Speech-to-text runs on Groq Whisper; both agents run on a Groq-hosted LLM.
+- The quiz writer receives the note-taker's output as context, so questions follow the structure of the notes.
 
-2. Open the app
-Click the link output in the terminal by the last command - the default is http://localhost:8501/
+## Run locally
+Needs Python 3.10 or newer and a free [Groq API key](https://console.groq.com/keys).
+```bash
+git clone https://github.com/rishabh12j/ai_powered_teaching_assistant.git
+cd ai_powered_teaching_assistant
+pip install -r requirements.txt
+export GROQ_API_KEY=your_groq_key
+python app.py
+```
+Then open the link printed in the terminal (default http://127.0.0.1:7860).
 
-## Use the application
+## Use it
+1. Upload an audio file of a lecture (up to 25 MB), or paste a YouTube link.
+2. Click **Make notes and quiz**.
+3. Read the **Notes**, **Quiz** and **Transcript** tabs.
 
-0. To test **geeknavi**, open this [link](https://huggingface.co/spaces/Rishabh12j/AI_Powered_Teaching_Assistant) 
+Processing time depends on the length of the lecture.
 
-1. Select the lecture file or youtube link.
+## Configuration
+| Setting | Default | Purpose |
+|---|---|---|
+| `GROQ_API_KEY` | (required) | Groq API key |
+| `GROQ_MODEL` | `openai/gpt-oss-120b` | Text model for both agents |
+| `GROQ_STT_MODEL` | `whisper-large-v3-turbo` | Speech-to-text model |
 
-    You can use either an audio or video file, and the file can be locally stored, remotely stored (and publicly accessibly), or on YouTube.
+## Limits
+- Audio files up to 25 MB; very long transcripts are trimmed to the first 24,000 characters.
+- YouTube often refuses to share captions with cloud servers. If a link fails, upload the audio instead.
 
-    ![Geeknavi-Interface](https://github.com/attrib07/Geeknavi-/assets/44226488/3b212637-690b-482c-9ef6-f227ebc979fa)
+## Future plans
+Carried over from the v0.1 roadmap:
+1. Ask questions about the course material and get answers grounded in the lecture.
+2. Generate diagrams of a course or module (flowcharts and sequences).
+3. Upload chat logs and slide decks as extra input.
+4. Add references for more comprehensive notes.
 
+## v0.1 architecture (2024)
+The original GeekNavi combined Google Gemini, OpenAI/Groq, Baseten and Backblaze B2 to transcribe audio, generate notes and create quiz questions.
 
-3. View the results
+![GeekNavi v0.1 architecture](https://github.com/attrib07/Geeknavi-/assets/44226488/23d1f2e2-96a8-45c1-8f84-18be9c0ee4e1)
 
-    Click **Sent** and wait for the results.
+The v0.1 code is in this repo's commit history.
 
-    Processing time will depend on the length of the file - hour long lectures may take several minutes to process.
+## Team Gen4 (v0.1)
+| Name | Discord | Email |
+|---|---|---|
+| Rishabh Jain | b0rn2clutch | rishabh12j@gmail.com |
+| Sai Amith Chillamcherla | amith98 | amith.ch@outlook.com |
+| Aman Hanspal | hanspaa2017108 | amanhanspal05@gmail.com |
+| Vicky Kumar | resetvicky01 | vickykumar07vikram@gmail.om |
 
-## Future Plans : 
+---
 
-    Comming Soon : 
-    ```bash
-    1. Allow you to ask questions about the course material to get specific answers tailored to the lecture content. 
-    2. Allow you to create Diagrams of course/module (flowchat and sequences)
-    3. New UI for Geeknavi 
-    4. Optional : Upload chat.txt and Ppt.
-    5. Optional : Add referance for a compehensive note
-    ```
-    
-## Team - Gen4
-
-Name |Discord Name with Email]
--- | --
-Rishabh Jain | [b0rn2clutch](rishabh12j@gmail.com)
-Sai Amith Chillamcherla | [amith98](amith.ch@outlook.com)
-Aman Hanspal | [hanspaa2017108](amanhanspal05@gmail.com)
-Vicky Kumar | [resetvicky01](vickykumar07vikram@gmail.om)
-
+**v0.2 author:** Rishabh Jain, AI engineer (MSc Robotics and Embedded AI, Maynooth University)  
+[More demos](https://huggingface.co/Rishabh12j) · [GitHub](https://github.com/rishabh12j) · [Portfolio](https://rishabh12j.github.io)
